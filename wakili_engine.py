@@ -17,8 +17,6 @@ class Config:
     generative_model_name: str = 'gemini-1.5-flash'
     embedding_model_name: str = 'models/text-embedding-004'
     pinecone_index_name: str = "wakili-ai"
-    # This dictionary translates our internal code's calls (e.g., 'statutes')
-    # to the actual, correct Pinecone namespace names (e.g., 'statute').
     namespace_mapping: Dict[str, str] = field(default_factory=lambda: {
         'statutes': 'statute',
         'caselaw': 'caselaw'
@@ -141,7 +139,9 @@ From the user question below, extract the following:
         return all_matches
 
     def _format_context_section(self, matches: Dict[str, Any], doc_type: str, max_docs: int) -> Tuple[str, List[Dict]]:
-        sorted_matches = sorted(values(), key=lambda x: x.get('score', 0), reverse=True)
+        # --- THIS IS THE CORRECTED LINE ---
+        sorted_matches = sorted(matches.values(), key=lambda x: x.get('score', 0), reverse=True)
+        # --- END OF CORRECTION ---
         top_matches = sorted_matches[:max_docs]
         context_str, metadata_list = "", []
         for match in top_matches:
