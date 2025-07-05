@@ -42,13 +42,45 @@ logger = logging.getLogger(__name__)
 
 
 class WakiliAI:
-    # ... (all other methods remain the same) ...
+    """
+    A sophisticated legal AI assistant using a Retrieval-Augmented Generation (RAG) pipeline.
+    """
+
+    def __init__(self, config: Config): # <-- This is the corrected __init__ method
+        """Initialize the Wakili AI legal assistant with a configuration object."""
+        self.config = config
+        self.generative_model = None
+        self.pinecone_index = None
+        self.available_namespaces = []
+        self._initialize_connections()
+
+    def _initialize_connections(self):
+        """Establishes and validates connections to Google AI and Pinecone."""
+        try:
+            if not all([self.config.google_api_key, self.config.pinecone_api_key]):
+                raise ValueError("Missing required environment variables: GOOGLE_API_KEY, PINECONE_API_KEY")
+
+            logger.info("Initializing connections to Google AI and Pinecone...")
+            genai.configure(api_key=self.config.google_api_key)
+            self.generative_model = genai.GenerativeModel(self.config.generative_model_name)
+
+            pc = Pinecone(api_key=self.config.pinecone_api_key)
+            if self.config.pinecone_index_name not in pc.list_indexes().names():
+                raise NameError(f"Index '{self.config.pinecone_index_name}' does not exist.")
+
+            self.pinecone_index = pc.Index(self.config.pinecone_index_name)
+
+            stats = self.pinecone_index.describe_index_stats()
+            self.available_namespaces = list(stats.get('namespaces', {}).keys())
+            logger.info(f"Available namespaces cached: {self.available_namespaces}")
+
+            logger.info("✅ Engine connections successful.")
+        except Exception as e:
+            logger.error(f"❌ Engine failed to initialize: {e}", exc_info=True)
+            raise
 
     def _extract_legal_keywords(self, question: str) -> Tuple[str, List[str], List[str]]:
-        """
-        Uses the LLM to extract structured legal keywords from the user's question.
-        """
-        # --- PROMPT ENHANCEMENT IS HERE ---
+        """Uses the LLM to extract structured legal keywords from the user's question."""
         keyword_prompt = f"""You are an expert Kenyan paralegal. Your task is to analyze a user's question and extract key information for a legal database search.
 
 From the user question below, extract the following:
@@ -67,13 +99,11 @@ ACTS: Employment Act, 2007
 
 **User Question to Analyze:** "{question}"
 """
-        # --- END OF PROMPT ENHANCEMENT ---
         try:
             response = self.generative_model.generate_content(keyword_prompt)
             text = response.text.strip()
             logger.info(f"Extracted Keywords:\n{text}")
 
-            # Refactored parser
             data = {'AREA': "", 'TERMS': [], 'ISSUES': [], 'ACTS': []}
             for line in text.split('\n'):
                 if ':' in line:
