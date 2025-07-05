@@ -2,5 +2,6 @@
 
 google-generativeai
 pinecone
-python-telegram-bot==21.0.1  # A modern, async version
-python-dotenv              # Good for local testing
+python-telegram-bot==21.0.1
+python-dotenv
+flask

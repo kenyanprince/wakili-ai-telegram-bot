@@ -1,15 +1,17 @@
 # render.yaml
 
 services:
-  - type: worker # Use 'worker' for bots that run continuously
+  - type: web # Changed from 'worker' to 'web'
     name: wakili-ai-telegram-bot
-    region: oregon # As you specified
+    region: oregon
     env: python
-    plan: free # As you specified
-    branch: master # Or the branch you want to deploy from
+    plan: free
+    branch: master # Or 'main' depending on your branch name
     buildCommand: "pip install -r requirements.txt"
+    # The start command is now for the Flask web server
     startCommand: "python telegram_bot.py"
+    healthCheckPath: /health # A simple URL to check if the app is alive
     envVars:
-      - fromGroup: wakili-ai-secrets # Connects to your secret group
+      - fromGroup: wakili-ai-secrets
       - key: PYTHON_VERSION
-        value: 3.11.4 # Use a specific version for consistency
+        value: 3.11.4

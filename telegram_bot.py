@@ -2,95 +2,89 @@
 
 import logging
 import os
+import asyncio
+from flask import Flask, request, Response
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from wakili_engine import WakiliAI, Config  # Import your engine
+from telegram.ext import Application, ContextTypes
+from wakili_engine import WakiliAI, Config
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Bot Welcome Message ---
-WELCOME_MESSAGE = """
-Karibu! Welcome to *Wakili Wangu Bot*  правосуддя! ⚖️
+# --- Configuration & Initialization ---
+try:
+    config = Config()
+    TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+    WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # The public URL of your Render service
 
-I am your AI legal assistant for Kenyan law. I can help you understand legal concepts by searching through statutes and case law.
+    if not all([TELEGRAM_TOKEN, WEBHOOK_URL]):
+        raise ValueError("Missing critical environment variables: TELEGRAM_BOT_TOKEN, WEBHOOK_URL")
 
-*How to use me:*
-Just ask me a legal question in plain English. For example:
-- "What are my rights if I am arrested?"
-- "How do I register a company in Kenya?"
+    # Initialize WakiliAI engine once
+    wakili_instance = WakiliAI(config)
 
-Please wait a moment after asking, as I need to think and research.
-
----
-*_Disclaimer:_* _I am an AI bot and not a qualified advocate. My responses are for informational purposes only and do not constitute legal advice. Always consult with a registered legal professional for your specific situation._
-"""
-
-
-# --- Telegram Command Handlers ---
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Sends a welcome message when the /start command is issued."""
-    await update.message.reply_text(WELCOME_MESSAGE, parse_mode='Markdown')
-
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles regular user messages, treating them as legal questions."""
-    user_question = update.message.text
-    chat_id = update.message.chat_id
-    logger.info(f"Received question from chat_id {chat_id}: \"{user_question}\"")
-
-    # Let the user know the bot is working on it
-    await context.bot.send_chat_action(chat_id=chat_id, action='typing')
-
-    try:
-        # Get the WakiliAI instance from the application context
-        wakili_instance = context.application.wakili_ai_instance
-
-        # Get the legal response
-        final_response = wakili_instance.get_wakili_response(user_question)
-
-        await update.message.reply_text(final_response, parse_mode='Markdown')
-        logger.info(f"Successfully sent response to chat_id {chat_id}.")
-
-    except Exception as e:
-        logger.error(f"Error handling question from {chat_id}: {e}", exc_info=True)
-        await update.message.reply_text(
-            "I'm sorry, I encountered an internal error. Please try asking your question again in a few moments.")
-
-
-def main():
-    """Starts the Telegram bot."""
-    # --- Load Configuration and Initialize WakiliAI ---
-    try:
-        config = Config()
-        # IMPORTANT: Load the NEW Telegram token from environment variables
-        TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-        if not TELEGRAM_TOKEN:
-            raise ValueError("TELEGRAM_BOT_TOKEN environment variable not set!")
-
-        wakili_instance = WakiliAI(config)
-        logger.info("WakiliAI engine initialized successfully.")
-    except Exception as e:
-        logger.critical(f"FATAL: Could not initialize WakiliAI engine. {e}", exc_info=True)
-        return  # Exit if the core engine can't start
-
-    # --- Set up the Telegram Application ---
+    # Set up the Telegram Application
+    # We don't need command handlers here as all updates come through the webhook
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Store the single instance of WakiliAI in the application context
-    # This is efficient as it avoids re-initializing the engine for every message
+    # Store the single instance of WakiliAI for access within handlers
     application.wakili_ai_instance = wakili_instance
 
-    # --- Register Handlers ---
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+except Exception as e:
+    logger.critical(f"FATAL: Application failed to initialize. Error: {e}", exc_info=True)
+    # If initialization fails, we should not proceed.
+    # In a real app, this would cause the container to fail and restart.
+    wakili_instance = None
+    application = None
 
-    # --- Start the Bot ---
-    logger.info("Starting Telegram bot polling...")
-    application.run_polling()
+# --- Web Server (Flask) Setup ---
+app = Flask(__name__)
+
+
+@app.route("/health")
+def health_check():
+    """Render's health check endpoint."""
+    return "OK", 200
+
+
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+async def webhook_handler():
+    """Handles incoming updates from Telegram."""
+    if not application:
+        logger.error("Application not initialized, cannot handle webhook.")
+        return "Internal Server Error", 500
+
+    update_data = request.get_json()
+    update = Update.de_json(update_data, application.bot)
+
+    # Process the update in the background
+    asyncio.create_task(application.process_update(update))
+
+    return "ok"
+
+
+async def main():
+    """Sets the Telegram webhook."""
+    if not application:
+        logger.error("Application not initialized, cannot set webhook.")
+        return
+
+    logger.info(f"Setting webhook to {WEBHOOK_URL}/{TELEGRAM_TOKEN}")
+    await application.bot.set_webhook(url=f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}", allowed_updates=Update.ALL_TYPES)
+    logger.info("Webhook set successfully.")
 
 
 if __name__ == "__main__":
-    main()
+    # This block now starts the web server, not the bot polling
+    if wakili_instance and application:
+        # Run the async main function to set the webhook
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(main())
+
+        # Start the Flask web server
+        # Render will pass the PORT environment variable automatically
+        port = int(os.environ.get("PORT", 8080))
+        app.run(host="0.0.0.0", port=port)
+    else:
+        logger.critical("Could not start Flask server because initialization failed.")
