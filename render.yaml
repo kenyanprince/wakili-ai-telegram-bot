@@ -1,0 +1,15 @@
+# render.yaml
+
+services:
+  - type: worker # Use 'worker' for bots that run continuously
+    name: wakili-ai-telegram-bot
+    region: oregon # As you specified
+    env: python
+    plan: free # As you specified
+    branch: main # Or the branch you want to deploy from
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python telegram_bot.py"
+    envVars:
+      - fromGroup: wakili-ai-secrets # Connects to your secret group
+      - key: PYTHON_VERSION
+        value: 3.11.4 # Use a specific version for consistency

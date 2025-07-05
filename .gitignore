@@ -1,0 +1,12 @@
+# .gitignore
+
+# Virtual environment
+venv/
+__pycache__/
+
+# IDE files
+.idea/
+*.pyc
+
+# Local secrets
+.env
