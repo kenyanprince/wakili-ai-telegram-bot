@@ -46,7 +46,7 @@ class WakiliAI:
     A sophisticated legal AI assistant using a Retrieval-Augmented Generation (RAG) pipeline.
     """
 
-    def __init__(self, config: Config): # <-- This is the corrected __init__ method
+    def __init__(self, config: Config):
         """Initialize the Wakili AI legal assistant with a configuration object."""
         self.config = config
         self.generative_model = None
@@ -70,6 +70,7 @@ class WakiliAI:
 
             self.pinecone_index = pc.Index(self.config.pinecone_index_name)
 
+            # Cache available namespaces for efficiency
             stats = self.pinecone_index.describe_index_stats()
             self.available_namespaces = list(stats.get('namespaces', {}).keys())
             logger.info(f"Available namespaces cached: {self.available_namespaces}")
@@ -81,29 +82,22 @@ class WakiliAI:
 
     def _extract_legal_keywords(self, question: str) -> Tuple[str, List[str], List[str]]:
         """Uses the LLM to extract structured legal keywords from the user's question."""
-        keyword_prompt = f"""You are an expert Kenyan paralegal. Your task is to analyze a user's question and extract key information for a legal database search.
+        keyword_prompt = f"""From the user question below, extract relevant legal search terms for Kenya.
 
-From the user question below, extract the following:
-1. PRIMARY LEGAL AREA: The specific area of Kenyan law.
-2. KEY LEGAL TERMS: Important legal concepts, phrases, and synonyms.
-3. SPECIFIC ACTIONS/ISSUES: The core actions or problems described.
-4. RELEVANT ACTS: The specific Kenyan Acts that govern the issue. Be thorough. If the topic is about employment, include the Employment Act. If it's about a car accident, you MUST include the Traffic Act. If it's about inheritance, include the Law of Succession Act.
+Format your response exactly as follows:
+AREA: [The main area of law]
+TERMS: [term1, term2, term3, term4, term5]
+ISSUES: [issue1, issue2, issue3]
+ACTS: [act1, act2, act3]
 
-**Example:**
-User Question: "My boss fired me without giving me a letter."
-Your Output:
-AREA: Employment Law
-TERMS: wrongful dismissal, unfair termination, termination notice, summary dismissal
-ISSUES: termination without notice, procedural fairness, dismissal letter
-ACTS: Employment Act, 2007
-
-**User Question to Analyze:** "{question}"
+User Question: "{question}"
 """
         try:
             response = self.generative_model.generate_content(keyword_prompt)
             text = response.text.strip()
             logger.info(f"Extracted Keywords:\n{text}")
 
+            # Refactored parser
             data = {'AREA': "", 'TERMS': [], 'ISSUES': [], 'ACTS': []}
             for line in text.split('\n'):
                 if ':' in line:
