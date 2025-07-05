@@ -1,8 +1,9 @@
 # requirements.txt
 
+quart
 google-generativeai
 pinecone
-python-telegram-bot==21.0.1
+python-telegram-bot
 python-dotenv
 flask[async]
 hypercorn
