@@ -6,7 +6,7 @@ services:
     region: oregon # As you specified
     env: python
     plan: free # As you specified
-    branch: main # Or the branch you want to deploy from
+    branch: master # Or the branch you want to deploy from
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python telegram_bot.py"
     envVars:
