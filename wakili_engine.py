@@ -13,7 +13,7 @@ from typing import Dict, List, Tuple, Any
 class Config:
     google_api_key: str = field(default_factory=lambda: os.getenv('GOOGLE_API_KEY'))
     pinecone_api_key: str = field(default_factory=lambda: os.getenv('PINECONE_API_KEY'))
-    generative_model_name: str = 'Gemini 2.5 Flash-Lite Preview 06-17'
+    generative_model_name: str = 'Gemini 2.5 Flash'
     embedding_model_name: str = 'models/text-embedding-004'
     pinecone_index_name: str = "wakili-ai"
 
