@@ -1,245 +1,147 @@
-# wakili_engine.py
+# telegram_bot.py
 
-import os
 import logging
-from dataclasses import dataclass, field
-import google.generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
-from pinecone import Pinecone
-from typing import Dict, List, Tuple, Any
+import os
+import asyncio
+import re
+from quart import Quart, request
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    ContextTypes,
+    MessageHandler,
+    CommandHandler,
+    CallbackQueryHandler,
+    filters,
+)
+from telegram.constants import ParseMode
+from wakili_engine import WakiliAI, Config
 
-
-# --- Configuration ---
-@dataclass
-class Config:
-    google_api_key: str = field(default_factory=lambda: os.getenv('GOOGLE_API_KEY'))
-    pinecone_api_key: str = field(default_factory=lambda: os.getenv('PINECONE_API_KEY'))
-    generative_model_name: str = 'gemini-1.5-flash'
-    embedding_model_name: str = 'models/text-embedding-004'
-    pinecone_index_name: str = "wakili-ai"
-    namespace_mapping: Dict[str, str] = field(default_factory=lambda: {'statutes': 'statute', 'caselaw': 'caselaw'})
-    statute_relevance_threshold: float = 0.40
-    caselaw_relevance_threshold: float = 0.50
-    max_statutes_in_context: int = 8
-    max_caselaw_in_context: int = 6
-
-
-# --- Logging Setup ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# --- Setup ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+HELP_MESSAGE = """
+*Wakili Wangu Bot Help* ⚖️
 
-class WakiliAI:
-    def __init__(self, config: Config):
-        self.config = config
-        self.generative_model = None
-        self.pinecone_index = None
-        self.available_namespaces = []
-        self._initialize_connections()
+I am an AI assistant for Kenyan law, designed to search statutes and case law to answer your questions.
 
-    def _initialize_connections(self):
-        try:
-            if not all([self.config.google_api_key, self.config.pinecone_api_key]):
-                raise ValueError("Missing GOOGLE_API_KEY or PINECONE_API_KEY")
-            logger.info("Initializing connections...")
-            genai.configure(api_key=self.config.google_api_key)
-            self.generative_model = genai.GenerativeModel(self.config.generative_model_name)
-            pc = Pinecone(api_key=self.config.pinecone_api_key)
-            self.pinecone_index = pc.Index(self.config.pinecone_index_name)
-            stats = self.pinecone_index.describe_index_stats()
-            self.available_namespaces = list(stats.get('namespaces', {}).keys())
-            logger.info(f"Available namespaces cached: {self.available_namespaces}")
-            logger.info("✅ Engine connections successful.")
-        except Exception as e:
-            logger.error(f"❌ Engine failed to initialize: {e}", exc_info=True)
-            raise
+*How to Use Me:*
+Just ask a legal question in plain English, for example:
+- "What are my rights if I am arrested?"
+- "How do I register a company?"
 
-    # --- FIX 1: This function now returns relevant_acts separately ---
-    def _extract_legal_keywords(self, question: str) -> Tuple[str, List[str], List[str], List[str]]:
-        keyword_prompt = f"""You are an expert Kenyan paralegal. Your task is to analyze a user's question and extract key information for a legal database search.
+I will provide a detailed, yet easy-to-understand explanation.
 
-From the user question below, extract the following:
-1. PRIMARY LEGAL AREA: The specific area of Kenyan law.
-2. KEY LEGAL TERMS: Important legal concepts, phrases, and synonyms.
-3. SPECIFIC ACTIONS/ISSUES: The core actions or problems described.
-4. RELEVANT ACTS: The specific Kenyan Acts that govern the issue. Be thorough. If the topic is about employment, include the Employment Act. If it's about a car accident, you MUST include the Traffic Act. For consumer rights, you MUST include the Consumer Protection Act and the Anti-Counterfeit Act.
-
-**User Question to Analyze:** "{question}"
+---
+*_Disclaimer:_* _I am an AI, not a lawyer. My answers are for informational purposes only. Always consult a qualified advocate for your specific situation._
 """
+NON_TEXT_MESSAGE = "I'm sorry, I can only understand legal questions written in text. Please type your question for me."
+
+
+# --- Markdown Sanitizer ---
+def sanitize_markdown_v2(text: str) -> str:
+    """A simple function to escape characters for Telegram's MarkdownV2 parser."""
+    escape_chars = r'\_*[]()~`>#+-=|{}.!'
+    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+
+
+# --- Core Bot Handlers ---
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Note: Using the forgiving MARKDOWN parser for simple static text.
+    await update.message.reply_text(HELP_MESSAGE, parse_mode=ParseMode.MARKDOWN)
+
+
+async def non_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(NON_TEXT_MESSAGE)
+
+
+async def feedback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    logger.info(f"Feedback from {query.from_user.id}: {query.data}")
+    # Use the forgiving MARKDOWN parser for editing, as the content is now controlled.
+    await query.edit_message_text(
+        text=f"{query.message.text}\n\n--- \n*🙏 Thank you for your feedback!*",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_question = update.message.text
+    chat_id = update.message.chat_id
+    logger.info(f"Processing question from chat_id {chat_id}")
+    await context.bot.send_chat_action(chat_id=chat_id, action='typing')
+
+    try:
+        wakili_instance = context.application.wakili_ai_instance
+        final_response_raw = await asyncio.to_thread(wakili_instance.get_response, user_question)
+
+        # We now trust the AI to generate safe Markdown, so we use the default parser
+        # which is more lenient and less likely to break with complex text.
+        final_response = final_response_raw
+
+        keyboard = [[
+            InlineKeyboardButton("👍 Helpful", callback_data="feedback_helpful"),
+            InlineKeyboardButton("👎 Not Helpful", callback_data="feedback_not_helpful"),
+        ]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await update.message.reply_text(final_response, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    except Exception as e:
+        logger.error(f"Error handling question from {chat_id}: {e}", exc_info=True)
+        await update.message.reply_text("I'm sorry, an internal error occurred.")
+
+
+# --- App Initialization & Server ---
+app = Quart(__name__)
+application = None
+
+
+@app.before_serving
+async def startup():
+    global application
+    try:
+        config = Config()
+        TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+        WEBHOOK_URL = os.getenv('WEBHOOK_URL')
+
+        if not all([TELEGRAM_TOKEN, WEBHOOK_URL]):
+            raise ValueError("Missing critical environment variables.")
+
+        wakili_instance = WakiliAI(config)
+
+        ptb_app = Application.builder().token(TELEGRAM_TOKEN).build()
+        ptb_app.wakili_ai_instance = wakili_instance
+
+        ptb_app.add_handler(CommandHandler("help", help_command))
+        ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_text_message))
+        ptb_app.add_handler(MessageHandler(filters.ALL & ~filters.TEXT & ~filters.COMMAND, non_text_handler))
+        ptb_app.add_handler(CallbackQueryHandler(feedback_handler))
+
+        await ptb_app.initialize()
+        await ptb_app.start()
+        await ptb_app.bot.set_webhook(url=f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}", allowed_updates=Update.ALL_TYPES)
+
+        application = ptb_app
+        logger.info("Wakili Wangu Telegram Bot is now live.")
+
+    except Exception as e:
+        logger.critical(f"FATAL: Application failed to initialize. Error: {e}", exc_info=True)
+
+
+@app.route("/health")
+async def health_check():
+    return "OK", 200
+
+
+@app.route(f"/{os.getenv('TELEGRAM_BOT_TOKEN', 'default')}", methods=["POST"])
+async def webhook_handler():
+    if application:
         try:
-            response = self.generative_model.generate_content(keyword_prompt)
-            text = response.text.strip()
-            logger.info(f"Extracted Keywords:\n{text}")
-            data = {'AREA': "", 'TERMS': [], 'ISSUES': [], 'ACTS': []}
-            for line in text.split('\n'):
-                if ':' in line:
-                    key, value = line.split(':', 1)
-                    key = key.strip().upper().replace('*', '')
-                    if key.startswith("1. PRIMARY LEGAL AREA"):
-                        key = "AREA"
-                    elif key.startswith("2. KEY LEGAL TERMS"):
-                        key = "TERMS"
-                    elif key.startswith("3. SPECIFIC ACTIONS/ISSUES"):
-                        key = "ISSUES"
-                    elif key.startswith("4. RELEVANT ACTS"):
-                        key = "ACTS"
-
-                    if key in data:
-                        clean_value = value.replace('*', '').strip()
-                        if isinstance(data[key], list):
-                            data[key].extend([item.strip() for item in clean_value.split(',') if item.strip()])
-                        else:
-                            data[key] = clean_value
-
-            return data['AREA'], data['TERMS'], data['ISSUES'], data['ACTS']
+            update = Update.de_json(await request.get_json(), application.bot)
+            asyncio.create_task(application.process_update(update))
         except Exception as e:
-            logger.error(f"Error extracting keywords: {e}", exc_info=True)
-            return "", [], [], []
-
-    def _search_vector_db(self, queries: List[str], namespace_key: str, top_k: int = 10) -> Dict[str, Any]:
-        actual_namespace = self.config.namespace_mapping.get(namespace_key)
-        if not actual_namespace or actual_namespace not in self.available_namespaces:
-            logger.warning(f"Namespace '{actual_namespace}' for key '{namespace_key}' not found or not available.")
-            return {}
-        matches = {}
-        try:
-            embeddings = genai.embed_content(model=self.config.embedding_model_name, content=queries)['embedding']
-            relevance_threshold = self.config.statute_relevance_threshold if namespace_key == 'statutes' else self.config.caselaw_relevance_threshold
-            for i, embedding in enumerate(embeddings):
-                results = self.pinecone_index.query(vector=embedding, top_k=top_k, include_metadata=True,
-                                                    namespace=actual_namespace)
-                for match in results.get('matches', []):
-                    if match.get('score', 0) >= relevance_threshold:
-                        if match['id'] not in matches or matches[match['id']]['score'] < match['score']:
-                            matches[match['id']] = match
-        except Exception as e:
-            logger.error(f"Error during vector search in '{actual_namespace}': {e}", exc_info=True)
-        return matches
-
-    # --- FIX 2: The search strategy now prioritizes searching for the exact Act names ---
-    def _enhanced_search_strategy(self, question: str, legal_area: str, search_terms: List[str],
-                                  legal_issues: List[str], relevant_acts: List[str], namespace: str) -> Dict[str, Any]:
-        logger.info(f"--- Running search strategy for '{namespace}' ---")
-        all_matches = {}
-
-        # Build a more intelligent query list, prioritizing specific Acts
-        queries = [question]
-        queries.extend(relevant_acts)  # Search for the exact Act titles first
-        if legal_area and search_terms:
-            queries.append(f"{legal_area} {' '.join(search_terms[:3])}")
-        queries.extend(search_terms[:3])  # Add a few general terms
-        queries.extend(legal_issues[:2])  # Add a few issue-based terms
-
-        unique_queries = sorted(list(set(q for q in queries if q)))
-
-        if unique_queries:
-            all_matches.update(self._search_vector_db(unique_queries, namespace, top_k=3))
-
-        if not all_matches:
-            logger.warning(f"No matches found for {namespace}. Trying simplified fallback.")
-            simple_query = " ".join(question.split()[:7])
-            all_matches.update(self._search_vector_db([simple_query], namespace, top_k=10))
-
-        logger.info(f"--- Total unique matches for '{namespace}': {len(all_matches)} ---")
-        return all_matches
-
-    def _format_context_section(self, matches: Dict[str, Any], doc_type: str, max_docs: int) -> Tuple[str, List[Dict]]:
-        sorted_matches = sorted(matches.values(), key=lambda x: x.get('score', 0), reverse=True)
-        top_matches = sorted_matches[:max_docs]
-        context_str, metadata_list = "", []
-        for match in top_matches:
-            metadata = match.get('metadata', {})
-            context_str += f"Source Type: {doc_type}\nTitle: {metadata.get('title', 'N/A')}\nContent: {metadata.get('text_snippet', '')}\n---\n"
-            metadata_list.append(metadata)
-        return context_str, metadata_list
-
-    def _build_context(self, statute_matches: Dict, caselaw_matches: Dict) -> Tuple[str, List[Dict]]:
-        statute_context, statute_meta = self._format_context_section(statute_matches, "Statute",
-                                                                     self.config.max_statutes_in_context)
-        caselaw_context, caselaw_meta = self._format_context_section(caselaw_matches, "Case Law",
-                                                                     self.config.max_caselaw_in_context)
-        context = statute_context + caselaw_context
-        source_metadata = statute_meta + caselaw_meta
-        logger.info(f"Building context with {len(statute_meta)} statutes and {len(caselaw_meta)} cases.")
-        return context, source_metadata
-
-    def _generate_response(self, question: str, context: str) -> str:
-        prompt = f"""You are Wakili Wangu, an expert legal AI assistant for Kenya. Your task is to provide a high-accuracy answer based ONLY on the provided legal context.
-
-**Thinking Process (Chain of Thought):**
-1.  **Analyze the User's Question:** Read the user's **Question** below to understand their specific problem. For example, are they asking for a specific fine, a legal process, or their general rights?
-2.  **Scan the Context for Key Laws:** Search the entire **Context** provided. Identify the primary Acts and case law that directly address the user's question. For example, if the user asks about a traffic fine, find the "Traffic Act" or "Traffic (Minor Offences) Rules" in the context.
-3.  **Extract Specific Details:** Pull out the exact legal rules, rights, and, most importantly, *specific penalties or fines* from the relevant documents. Look for numbers, currency symbols (Ksh), and keywords like 'fine,' 'penalty,' or 'imprisonment.'
-4.  **Synthesize the Final Answer:** Based *only* on the extracted details, construct the final answer using the structure below. Directly connect the legal penalty to the user's specific question.
-
-**Response Structure (use WhatsApp markdown):**
-*   *Empathetic Acknowledgment:* Start with a single sentence showing you understand the situation.
-*   ✅ *Direct Answer:* A clear, one-sentence summary of the legal position, including the specific penalty if found (e.g., "The penalty for this offense is a fine of...").
-*   ⚖️ *The Law Explained:* Explain the most relevant Act from the context (e.g., "The Traffic (Minor Offences) Rules states..."). Quote the specific section or rule that mentions the penalty.
-*   🏛️ *Relevant Case Law:* If there are cases, summarize one that applies. If not, state: "No specific case law was retrieved for this query."
-*   📝 *Recommended Steps:* A clear, numbered list of actions the user should take based on the law.
-
-**Crucial Rule:** If the context does not contain the specific penalty or fine amount, you MUST state that clearly. Do not invent numbers.
-
-**Context:**
----
-{context}
----
-
-**Question:** {question}
-
-**Answer:**"""
-        try:
-            safety_settings = {
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
-            response = self.generative_model.generate_content(prompt, safety_settings=safety_settings)
-            return response.text
-        except Exception as e:
-            logger.error(f"Error generating LLM response: {e}", exc_info=True)
-            return "I am sorry, I encountered an error while formulating the final response."
-
-    def _format_sources_and_disclaimer(self, source_metadata: List[Dict]) -> str:
-        if not source_metadata: return ""
-        unique_sources = {metadata.get('title', 'N/A').strip(): metadata.get('source_url', '#') for metadata in
-                          source_metadata}
-        sources_list = []
-        for title, url in unique_sources.items():
-            if title != 'N/A':
-                if url and url != '#':
-                    sources_list.append(f"- [{title}]({url})")
-                else:
-                    sources_list.append(f"- {title}")
-        disclaimer = "\n\n---\n_Disclaimer: This is not legal advice..._"
-        if not sources_list: return disclaimer
-        return "\n\n" + "=" * 15 + "\n*Sources Used:*\n" + "\n".join(sources_list) + disclaimer
-
-    # --- FIX 3: The main public method is updated to pass the new variables ---
-    def get_response(self, question: str) -> str:
-        if not self.pinecone_index: return "My core systems are offline."
-        try:
-            logger.info(f"--- New Question Received: \"{question}\" ---")
-
-            # Unpack all the returned values correctly
-            legal_area, search_terms, legal_issues, relevant_acts = self._extract_legal_keywords(question)
-
-            # Pass them to the enhanced search strategy
-            statute_matches = self._enhanced_search_strategy(question, legal_area, search_terms, legal_issues,
-                                                             relevant_acts, 'statutes')
-            caselaw_matches = self._enhanced_search_strategy(question, legal_area, search_terms, legal_issues,
-                                                             relevant_acts, 'caselaw')
-
-            context, source_metadata = self._build_context(statute_matches, caselaw_matches)
-
-            if not context.strip():
-                return "I'm sorry, I could not find relevant legal information."
-
-            answer = self._generate_response(question, context)
-            sources_section = self._format_sources_and_disclaimer(source_metadata)
-            return answer + sources_section
-        except Exception as e:
-            logger.error(f"A critical error occurred in get_response: {e}", exc_info=True)
-            return "I'm sorry, a critical error occurred."
+            logger.error(f"Error processing webhook: {e}", exc_info=True)
+        return "ok"
+    return "Internal Server Error", 500
