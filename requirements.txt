@@ -1,5 +1,6 @@
 # requirements.txt
 
+
 quart
 google-generativeai
 pinecone

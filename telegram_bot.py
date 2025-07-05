@@ -119,6 +119,7 @@ async def root():
     return "Wakili AI Telegram Bot is running!"
 
 
+
 if __name__ == "__main__":
     # This won't run when using Hypercorn, but useful for local testing
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
