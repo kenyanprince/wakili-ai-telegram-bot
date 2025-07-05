@@ -85,7 +85,7 @@ async def startup():
         await ptb_app.bot.set_webhook(url=f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}", allowed_updates=Update.ALL_TYPES)
 
         application = ptb_app
-        logger.info("Wakili Wangu Telegram Bot is live.")
+        logger.info("Wakili Wangu Telegram Bot is now live.")
     except Exception as e:
         logger.critical(f"FATAL: Application failed to initialize. Error: {e}", exc_info=True)
 

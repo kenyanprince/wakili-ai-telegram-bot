@@ -143,4 +143,4 @@ class WakiliAI:
             return answer + sources_section
         except Exception as e:
             logger.error(f"A critical error occurred in get_response: {e}", exc_info=True)
-            return "I'm sorry, a critical error occurred. Please try again."
+            return "I'm sorry, a critical error occurred. Please try again later."
