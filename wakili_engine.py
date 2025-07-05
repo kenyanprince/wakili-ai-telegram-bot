@@ -54,7 +54,8 @@ class WakiliAI:
             logger.error(f"❌ Engine failed to initialize: {e}", exc_info=True)
             raise
 
-    def _extract_legal_keywords(self, question: str) -> Tuple[str, List[str], List[str]]:
+    # --- FIX 1: This function now returns relevant_acts separately ---
+    def _extract_legal_keywords(self, question: str) -> Tuple[str, List[str], List[str], List[str]]:
         keyword_prompt = f"""You are an expert Kenyan paralegal. Your task is to analyze a user's question and extract key information for a legal database search.
 
 From the user question below, extract the following:
@@ -90,11 +91,10 @@ From the user question below, extract the following:
                         else:
                             data[key] = clean_value
 
-            search_terms = data['TERMS'] + data['ACTS']
-            return data['AREA'], search_terms, data['ISSUES']
+            return data['AREA'], data['TERMS'], data['ISSUES'], data['ACTS']
         except Exception as e:
             logger.error(f"Error extracting keywords: {e}", exc_info=True)
-            return "", [], []
+            return "", [], [], []
 
     def _search_vector_db(self, queries: List[str], namespace_key: str, top_k: int = 10) -> Dict[str, Any]:
         actual_namespace = self.config.namespace_mapping.get(namespace_key)
@@ -116,22 +116,30 @@ From the user question below, extract the following:
             logger.error(f"Error during vector search in '{actual_namespace}': {e}", exc_info=True)
         return matches
 
+    # --- FIX 2: The search strategy now prioritizes searching for the exact Act names ---
     def _enhanced_search_strategy(self, question: str, legal_area: str, search_terms: List[str],
-                                  legal_issues: List[str], namespace: str) -> Dict[str, Any]:
+                                  legal_issues: List[str], relevant_acts: List[str], namespace: str) -> Dict[str, Any]:
         logger.info(f"--- Running search strategy for '{namespace}' ---")
         all_matches = {}
+
+        # Build a more intelligent query list, prioritizing specific Acts
         queries = [question]
+        queries.extend(relevant_acts)  # Search for the exact Act titles first
         if legal_area and search_terms:
             queries.append(f"{legal_area} {' '.join(search_terms[:3])}")
-        queries.extend(search_terms[:5])
-        queries.extend(legal_issues[:3])
+        queries.extend(search_terms[:3])  # Add a few general terms
+        queries.extend(legal_issues[:2])  # Add a few issue-based terms
+
         unique_queries = sorted(list(set(q for q in queries if q)))
+
         if unique_queries:
-            all_matches.update(self._search_vector_db(unique_queries, namespace, top_k=5))
+            all_matches.update(self._search_vector_db(unique_queries, namespace, top_k=3))
+
         if not all_matches:
             logger.warning(f"No matches found for {namespace}. Trying simplified fallback.")
             simple_query = " ".join(question.split()[:7])
             all_matches.update(self._search_vector_db([simple_query], namespace, top_k=10))
+
         logger.info(f"--- Total unique matches for '{namespace}': {len(all_matches)} ---")
         return all_matches
 
@@ -156,23 +164,22 @@ From the user question below, extract the following:
         return context, source_metadata
 
     def _generate_response(self, question: str, context: str) -> str:
-        # --- THIS IS THE CORRECTED, DYNAMIC PROMPT ---
         prompt = f"""You are Wakili Wangu, an expert legal AI assistant for Kenya. Your task is to provide a high-accuracy answer based ONLY on the provided legal context.
 
 **Thinking Process (Chain of Thought):**
-1.  **Analyze the User's Question:** Read the user's **Question** below to understand their specific problem.
-2.  **Scan the Context for Relevant Laws:** Search the entire **Context** provided. Identify the primary Acts and case law that directly address the user's question.
-3.  **Extract Specific Rules and Principles:** Pull out the exact legal rules, rights, duties, and penalties from the most relevant documents in the context.
-4.  **Synthesize the Final Answer:** Based *only* on the extracted rules, construct the final answer using the structure below. Directly connect the legal principles to the user's situation.
+1.  **Analyze the User's Question:** Read the user's **Question** below to understand their specific problem. For example, are they asking for a specific fine, a legal process, or their general rights?
+2.  **Scan the Context for Key Laws:** Search the entire **Context** provided. Identify the primary Acts and case law that directly address the user's question. For example, if the user asks about a traffic fine, find the "Traffic Act" or "Traffic (Minor Offences) Rules" in the context.
+3.  **Extract Specific Details:** Pull out the exact legal rules, rights, and, most importantly, *specific penalties or fines* from the relevant documents. Look for numbers, currency symbols (Ksh), and keywords like 'fine,' 'penalty,' or 'imprisonment.'
+4.  **Synthesize the Final Answer:** Based *only* on the extracted details, construct the final answer using the structure below. Directly connect the legal penalty to the user's specific question.
 
 **Response Structure (use WhatsApp markdown):**
-*   *Empathetic Acknowledgment:* Start with a single sentence showing you understand the user's situation.
-*   ✅ *Direct Answer:* A clear, one-sentence summary of the legal position based on the context.
-*   ⚖️ *The Law Explained:* Explain the most relevant Act from the context (e.g., "The Traffic Act says..."). Quote specific sections if available. Explain what the law means for the user.
-*   🏛️ *Relevant Case Law:* If there are cases in the context, summarize one that applies. If not, state: "No specific case law was retrieved for this query."
-*   📝 *Recommended Steps:* A clear, numbered list of actions the user should take based on the provided law.
+*   *Empathetic Acknowledgment:* Start with a single sentence showing you understand the situation.
+*   ✅ *Direct Answer:* A clear, one-sentence summary of the legal position, including the specific penalty if found (e.g., "The penalty for this offense is a fine of...").
+*   ⚖️ *The Law Explained:* Explain the most relevant Act from the context (e.g., "The Traffic (Minor Offences) Rules states..."). Quote the specific section or rule that mentions the penalty.
+*   🏛️ *Relevant Case Law:* If there are cases, summarize one that applies. If not, state: "No specific case law was retrieved for this query."
+*   📝 *Recommended Steps:* A clear, numbered list of actions the user should take based on the law.
 
-**Crucial Rule:** If the context is insufficient to provide a detailed answer, you MUST state that clearly. Do not invent information.
+**Crucial Rule:** If the context does not contain the specific penalty or fine amount, you MUST state that clearly. Do not invent numbers.
 
 **Context:**
 ---
@@ -210,18 +217,26 @@ From the user question below, extract the following:
         if not sources_list: return disclaimer
         return "\n\n" + "=" * 15 + "\n*Sources Used:*\n" + "\n".join(sources_list) + disclaimer
 
+    # --- FIX 3: The main public method is updated to pass the new variables ---
     def get_response(self, question: str) -> str:
         if not self.pinecone_index: return "My core systems are offline."
         try:
             logger.info(f"--- New Question Received: \"{question}\" ---")
-            legal_area, search_terms, legal_issues = self._extract_legal_keywords(question)
+
+            # Unpack all the returned values correctly
+            legal_area, search_terms, legal_issues, relevant_acts = self._extract_legal_keywords(question)
+
+            # Pass them to the enhanced search strategy
             statute_matches = self._enhanced_search_strategy(question, legal_area, search_terms, legal_issues,
-                                                             'statutes')
+                                                             relevant_acts, 'statutes')
             caselaw_matches = self._enhanced_search_strategy(question, legal_area, search_terms, legal_issues,
-                                                             'caselaw')
+                                                             relevant_acts, 'caselaw')
+
             context, source_metadata = self._build_context(statute_matches, caselaw_matches)
+
             if not context.strip():
                 return "I'm sorry, I could not find relevant legal information."
+
             answer = self._generate_response(question, context)
             sources_section = self._format_sources_and_disclaimer(source_metadata)
             return answer + sources_section
