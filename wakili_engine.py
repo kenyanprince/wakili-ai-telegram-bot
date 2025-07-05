@@ -4,6 +4,7 @@ import os
 import logging
 from dataclasses import dataclass, field
 import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from pinecone import Pinecone
 from typing import Dict, List, Tuple, Any
 
@@ -40,7 +41,6 @@ class WakiliAI:
         try:
             if not all([self.config.google_api_key, self.config.pinecone_api_key]):
                 raise ValueError("Missing GOOGLE_API_KEY or PINECONE_API_KEY")
-
             logger.info("Initializing connections to Google AI and Pinecone...")
             genai.configure(api_key=self.config.google_api_key)
             self.generative_model = genai.GenerativeModel(self.config.generative_model_name)
@@ -93,8 +93,7 @@ From the user question below, extract the following:
             embeddings = genai.embed_content(model=self.config.embedding_model_name, content=queries)['embedding']
             relevance_threshold = self.config.statute_relevance_threshold if namespace_key == 'statutes' else self.config.caselaw_relevance_threshold
             for i, embedding in enumerate(embeddings):
-                results = self.pinecone_index.query(vector=embedding, top_k=top_k, include_metadata=True,
-                                                    namespace=actual_namespace)
+                results = self.pinecone_index.query(vector=embedding, top_k=top_k, include_metadata=True, namespace=actual_namespace)
                 for match in results.get('matches', []):
                     if match.get('score', 0) >= relevance_threshold:
                         if match['id'] not in matches or matches[match['id']]['score'] < match['score']:
@@ -103,8 +102,7 @@ From the user question below, extract the following:
             logger.error(f"Error during vector search in '{actual_namespace}': {e}", exc_info=True)
         return matches
 
-    def _enhanced_search_strategy(self, question: str, legal_area: str, search_terms: List[str],
-                                  legal_issues: List[str], namespace: str) -> Dict[str, Any]:
+    def _enhanced_search_strategy(self, question: str, legal_area: str, search_terms: List[str], legal_issues: List[str], namespace: str) -> Dict[str, Any]:
         logger.info(f"--- Running search strategy for '{namespace}' ---")
         all_matches = {}
         queries = [question]
@@ -133,10 +131,8 @@ From the user question below, extract the following:
         return context_str, metadata_list
 
     def _build_context(self, statute_matches: Dict, caselaw_matches: Dict) -> Tuple[str, List[Dict]]:
-        statute_context, statute_meta = self._format_context_section(statute_matches, "Statute",
-                                                                     self.config.max_statutes_in_context)
-        caselaw_context, caselaw_meta = self._format_context_section(caselaw_matches, "Case Law",
-                                                                     self.config.max_caselaw_in_context)
+        statute_context, statute_meta = self._format_context_section(statute_matches, "Statute", self.config.max_statutes_in_context)
+        caselaw_context, caselaw_meta = self._format_context_section(caselaw_matches, "Case Law", self.config.max_caselaw_in_context)
         context = statute_context + caselaw_context
         source_metadata = statute_meta + caselaw_meta
         logger.info(f"Building context with {len(statute_meta)} statutes and {len(caselaw_meta)} cases.")
@@ -170,46 +166,51 @@ From the user question below, extract the following:
 
 **Answer:**"""
         try:
-            return self.generative_model.generate_content(prompt).text
+            # Define safety settings to be less restrictive for legal content
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+
+            response = self.generative_model.generate_content(
+                prompt,
+                safety_settings=safety_settings
+            )
+            return response.text
         except Exception as e:
             logger.error(f"Error generating LLM response: {e}", exc_info=True)
             return "I am sorry, I encountered an error while formulating the final response."
 
     def _format_sources_and_disclaimer(self, source_metadata: List[Dict]) -> str:
         if not source_metadata: return ""
-        unique_sources = {metadata.get('title', 'N/A').strip(): metadata.get('source_url', '#') for metadata in
-                          source_metadata}
+        unique_sources = {metadata.get('title', 'N/A').strip(): metadata.get('source_url', '#') for metadata in source_metadata}
         sources_list = []
         for title, url in unique_sources.items():
             if title != 'N/A':
                 if url and url != '#':
-                    sources_list.append(f"- [{title}]({url})")  # Format as clickable link
+                    sources_list.append(f"- [{title}]({url})")
                 else:
-                    sources_list.append(f"- {title}")  # Fallback for no URL
+                    sources_list.append(f"- {title}")
 
-        disclaimer = "\n\n---\n_Disclaimer: This is not legal advice. For informational purposes only. Always consult a qualified advocate._"
+        disclaimer = "\n\n---\n_Disclaimer: This is not legal advice..._"
         if not sources_list: return disclaimer
         return "\n\n" + "=" * 15 + "\n*Sources Used:*\n" + "\n".join(sources_list) + disclaimer
 
     def get_response(self, question: str) -> str:
-        if not self.pinecone_index: return "My core systems are offline. Please try again later."
+        if not self.pinecone_index: return "My core systems are offline."
         try:
             logger.info(f"--- New Question Received: \"{question}\" ---")
-
             legal_area, search_terms, legal_issues = self._extract_legal_keywords(question)
-            statute_matches = self._enhanced_search_strategy(question, legal_area, search_terms, legal_issues,
-                                                             'statutes')
-            caselaw_matches = self._enhanced_search_strategy(question, legal_area, search_terms, legal_issues,
-                                                             'caselaw')
-
+            statute_matches = self._enhanced_search_strategy(question, legal_area, search_terms, legal_issues, 'statutes')
+            caselaw_matches = self._enhanced_search_strategy(question, legal_area, search_terms, legal_issues, 'caselaw')
             context, source_metadata = self._build_context(statute_matches, caselaw_matches)
-
             if not context.strip():
-                return "I'm sorry, I could not find relevant legal information for your query. Please try rephrasing."
-
+                return "I'm sorry, I could not find relevant legal information."
             answer = self._generate_response(question, context)
             sources_section = self._format_sources_and_disclaimer(source_metadata)
             return answer + sources_section
         except Exception as e:
             logger.error(f"A critical error occurred in get_response: {e}", exc_info=True)
-            return "I'm sorry, a critical error occurred. Please try again later."
+            return "I'm sorry, a critical error occurred."
