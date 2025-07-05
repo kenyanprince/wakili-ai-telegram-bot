@@ -39,11 +39,25 @@ I will provide a detailed, yet easy-to-understand explanation.
 NON_TEXT_MESSAGE = "I'm sorry, I can only understand legal questions written in text. Please type your question for me."
 
 
-# --- Markdown Sanitizer ---
+# --- THIS IS THE FIX: A FUNCTION TO SANITIZE MARKDOWN V2 ---
 def sanitize_markdown_v2(text: str) -> str:
-    """A simple function to escape characters for Telegram's MarkdownV2 parser."""
-    escape_chars = r'\_*[]()~`>#+-=|{}.!'
-    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+    """Escapes characters for Telegram's MarkdownV2 parser while preserving bold/italics."""
+    # First, escape all special characters except for * and _
+    escape_chars = r'\[\]()~`>#+-=|{}.!'
+    sanitized_text = re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+
+    # Now, handle asterisks and underscores carefully
+    # This is a simple approach: if a line has an odd number of them, escape them all.
+    # A more complex regex could handle nested cases, but this covers most LLM errors.
+    final_lines = []
+    for line in sanitized_text.split('\n'):
+        if line.count('*') % 2 != 0:
+            line = line.replace('*', '\\*')
+        if line.count('_') % 2 != 0:
+            line = line.replace('_', '\\_')
+        final_lines.append(line)
+
+    return '\n'.join(final_lines)
 
 
 # --- Core Bot Handlers ---
@@ -59,11 +73,11 @@ async def feedback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     logger.info(f"Feedback from {query.from_user.id}: {query.data}")
-    # We use query.message.text_markdown_v2 to get the text with entities
-    await query.edit_message_text(
-        text=f"{query.message.text_markdown_v2}\n\n---\n*🙏 Thank you for your feedback\!*",
-        parse_mode=ParseMode.MARKDOWN_V2
-    )
+
+    # When editing, we must also use a compatible format.
+    # We will simply edit the text and remove the buttons.
+    await query.edit_message_text(text=f"{query.message.text}\n\n--- \n*🙏 Thank you for your feedback!*",
+                                  parse_mode=ParseMode.MARKDOWN)
 
 
 async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -76,9 +90,8 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
         wakili_instance = context.application.wakili_ai_instance
         final_response_raw = await asyncio.to_thread(wakili_instance.get_response, user_question)
 
-        # We don't need to sanitize if we trust the AI prompt to use safe Markdown.
-        # Let's switch back to the more forgiving default parser.
-        final_response = final_response_raw
+        # Sanitize the AI's response before sending
+        final_response_sanitized = sanitize_markdown_v2(final_response_raw)
 
         keyboard = [[
             InlineKeyboardButton("👍 Helpful", callback_data="feedback_helpful"),
@@ -86,21 +99,21 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
         ]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        await update.message.reply_text(final_response, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        # Use the more robust MarkdownV2 parser
+        await update.message.reply_text(final_response_sanitized, parse_mode=ParseMode.MARKDOWN_V2,
+                                        reply_markup=reply_markup)
     except Exception as e:
         logger.error(f"Error handling question from {chat_id}: {e}", exc_info=True)
-        await update.message.reply_text("I'm sorry, an internal error occurred.")
+        await update.message.reply_text("I'm sorry, an internal error occurred while processing your request.")
 
 
 # --- App Initialization & Server ---
-# THIS IS THE CRITICAL PART: 'app' must be in the global scope for Hypercorn
 app = Quart(__name__)
-application = None  # Define application in the global scope as well
+application = None
 
 
 @app.before_serving
 async def startup():
-    """This function is run by Quart ONCE before the server starts."""
     global application
     try:
         config = Config()
