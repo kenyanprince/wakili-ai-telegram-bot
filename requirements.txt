@@ -6,4 +6,4 @@ pinecone
 python-telegram-bot
 python-dotenv
 hypercorn
-panda
+pandas
