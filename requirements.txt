@@ -5,3 +5,4 @@ pinecone
 python-telegram-bot==21.0.1
 python-dotenv
 flask[async]
+hypercorn

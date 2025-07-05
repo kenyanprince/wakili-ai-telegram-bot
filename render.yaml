@@ -1,16 +1,16 @@
 # render.yaml
 
 services:
-  - type: web # Changed from 'worker' to 'web'
+  - type: web
     name: wakili-ai-telegram-bot
     region: oregon
     env: python
     plan: free
-    branch: master # Or 'main' depending on your branch name
+    branch: master # Or 'main'
     buildCommand: "pip install -r requirements.txt"
-    # The start command is now for the Flask web server
-    startCommand: "python telegram_bot.py"
-    healthCheckPath: /health # A simple URL to check if the app is alive
+    # THE FIX IS HERE: Use Hypercorn to run the app
+    startCommand: "hypercorn telegram_bot:app --bind 0.0.0.0:$PORT"
+    healthCheckPath: /health
     envVars:
       - fromGroup: wakili-ai-secrets
       - key: PYTHON_VERSION

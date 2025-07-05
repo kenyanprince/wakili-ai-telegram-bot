@@ -12,7 +12,8 @@ from wakili_engine import WakiliAI, Config
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Configuration & Initialization ---
+# --- App Initialization ---
+# This part now runs when Hypercorn imports the file
 try:
     config = Config()
     TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -26,16 +27,31 @@ try:
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.wakili_ai_instance = wakili_instance
 
+    # Add the message handler
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_text_message))
+
+    # Run the async setup ONCE when the app starts
+    asyncio.run(application.initialize())
+    asyncio.run(application.start())
+    asyncio.run(application.bot.set_webhook(url=f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}", allowed_updates=Update.ALL_TYPES))
+
+    logger.info("Bot setup complete. Webhook is set.")
+
 except Exception as e:
     logger.critical(f"FATAL: Application failed to initialize. Error: {e}", exc_info=True)
     wakili_instance = None
     application = None
 
-# --- Web Server (Flask) Setup ---
+# --- Web Server (Flask) and Route Handlers ---
 app = Flask(__name__)
 
 
-# --- Telegram Processing Logic ---
+# This function's logic is now inside the try/except block above
+# and is no longer needed
+# async def main():
+#     pass
+
+# This is the main processing function
 async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """The core logic to handle a text message."""
     user_question = update.message.text
@@ -47,14 +63,11 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         wakili_instance = context.application.wakili_ai_instance
 
-        # --- THE FIX IS HERE ---
-        # Run the blocking function in a separate thread to avoid freezing the event loop
         logger.info("Calling WakiliAI engine in a background thread...")
         final_response = await asyncio.to_thread(
             wakili_instance.get_wakili_response, user_question
         )
         logger.info("WakiliAI engine has returned a response.")
-        # --- END OF FIX ---
 
         await update.message.reply_text(final_response, parse_mode='Markdown')
         logger.info(f"Successfully sent final response to chat_id {chat_id}.")
@@ -80,27 +93,5 @@ async def webhook_handler():
 
     return "ok"
 
-
-async def main():
-    if not application:
-        return
-
-    # More specific handler for text messages only
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_text_message))
-
-    await application.initialize()
-    await application.start()
-
-    await application.bot.set_webhook(url=f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}", allowed_updates=Update.ALL_TYPES)
-    logger.info("Webhook setup complete. Bot is ready.")
-
-
-if __name__ == "__main__":
-    if wakili_instance and application:
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(main())
-
-        port = int(os.environ.get("PORT", 8080))
-        app.run(host="0.0.0.0", port=port)
-    else:
-        logger.critical("Could not start Flask server because initialization failed.")
+# THE FIX IS HERE: We no longer have an __main__ block that calls app.run()
+# Hypercorn is now our entry point.
