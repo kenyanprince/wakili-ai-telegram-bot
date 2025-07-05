@@ -17,10 +17,7 @@ class Config:
     generative_model_name: str = 'gemini-1.5-flash'
     embedding_model_name: str = 'models/text-embedding-004'
     pinecone_index_name: str = "wakili-ai"
-    namespace_mapping: Dict[str, str] = field(default_factory=lambda: {
-        'statutes': 'statute',
-        'caselaw': 'caselaw'
-    })
+    namespace_mapping: Dict[str, str] = field(default_factory=lambda: {'statutes': 'statute', 'caselaw': 'caselaw'})
     statute_relevance_threshold: float = 0.40
     caselaw_relevance_threshold: float = 0.50
     max_statutes_in_context: int = 8
@@ -139,9 +136,7 @@ From the user question below, extract the following:
         return all_matches
 
     def _format_context_section(self, matches: Dict[str, Any], doc_type: str, max_docs: int) -> Tuple[str, List[Dict]]:
-        # --- THIS IS THE CORRECTED LINE ---
         sorted_matches = sorted(matches.values(), key=lambda x: x.get('score', 0), reverse=True)
-        # --- END OF CORRECTION ---
         top_matches = sorted_matches[:max_docs]
         context_str, metadata_list = "", []
         for match in top_matches:
@@ -160,23 +155,24 @@ From the user question below, extract the following:
         logger.info(f"Building context with {len(statute_meta)} statutes and {len(caselaw_meta)} cases.")
         return context, source_metadata
 
+    # --- THIS IS THE UPGRADED "BRAIN" FOR SYNTHESIS ---
     def _generate_response(self, question: str, context: str) -> str:
         prompt = f"""You are Wakili Wangu, an expert legal AI assistant for Kenya. Your task is to provide a high-accuracy answer based ONLY on the provided legal context.
 
 **Thinking Process (Chain of Thought):**
-1.  **Identify the User's Core Problem:** What is the user's fundamental legal question?
-2.  **Scan the Context for Key Laws:** Read through all the provided text. Identify the primary Acts that address the user's problem, such as the Consumer Protection Act or the Anti-Counterfeit Act.
-3.  **Extract Specific Rules and Rights:** Pull out the exact duties of sellers and the rights of consumers mentioned in those Acts. Note any specific remedies like refunds or replacements.
-4.  **Synthesize the Answer:** Based on the extracted rules, construct the final answer using the structure below. Do not add any outside information.
+1.  **Identify the User's Core Problem:** The user bought a fake product and wants to know their rights and what to do.
+2.  **Scan the Context for Key Laws:** Search the context for the "Consumer Protection Act", "Anti-Counterfeit Act", and "Sale of Goods Act".
+3.  **Extract Specific Rights and Duties:** From these Acts, pull out the consumer's specific rights (e.g., right to quality goods, right to redress) and the seller's duties (e.g., not to mislead, duty to provide authentic goods).
+4.  **Synthesize the Answer:** Based *only* on the extracted rights and duties, construct the final answer using the structure below. Directly connect the seller's failure to the user's right to a remedy.
 
 **Response Structure (use WhatsApp markdown):**
 *   *Empathetic Acknowledgment:* Start with a single sentence showing you understand the situation.
-*   ✅ *Direct Answer:* A clear, one-sentence summary of the user's rights.
-*   ⚖️ *The Law Explained:* Explain the most relevant Act from the context (e.g., "The Consumer Protection Act..."). Quote specific sections if available. Explain what the law means for the user.
+*   ✅ *Direct Answer:* A clear, one-sentence summary of the user's primary right (e.g., "You have the right to a refund, repair, or replacement...").
+*   ⚖️ *The Law Explained:* Explain the most relevant Act from the context (e.g., "The Consumer Protection Act protects you..."). Explain how the seller of a fake product has violated this Act and what that means for the user. Quote specific sections if available.
 *   🏛️ *Relevant Case Law:* If there are cases, summarize one that applies. If not, state: "No specific case law was retrieved for this query."
-*   📝 *Recommended Steps:* A clear, numbered list of actions the user should take based on the law.
+*   📝 *Recommended Steps:* A clear, numbered list of actions the user should take based on their rights under the law.
 
-**Crucial Rule:** If the context is insufficient to provide a detailed answer, state that clearly.
+**Crucial Rule:** If the context does not contain specific consumer rights or remedies, you MUST state: "Based on the provided information, the specific remedies like a refund are not detailed, but the law provides for consumer protection. It is best to consult with a legal expert." Do not invent steps.
 
 **Context:**
 ---
