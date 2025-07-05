@@ -1,5 +1,3 @@
-# wakili_engine.py
-
 import os
 import logging
 from dataclasses import dataclass, field
@@ -13,7 +11,7 @@ from typing import Dict, List, Tuple, Any
 class Config:
     google_api_key: str = field(default_factory=lambda: os.getenv('GOOGLE_API_KEY'))
     pinecone_api_key: str = field(default_factory=lambda: os.getenv('PINECONE_API_KEY'))
-    generative_model_name: str = 'Gemini 2.5 Flash'
+    generative_model_name: str = 'gemini-1.5-flash'
     embedding_model_name: str = 'models/text-embedding-004'
     pinecone_index_name: str = "wakili-ai"
 
@@ -118,37 +116,22 @@ class WakiliAI:
             logger.error(f"Error generating LLM response: {e}", exc_info=True)
             return "I am sorry, I encountered an error while formulating the final response."
 
-    # --- THIS IS THE CORRECTED METHOD ---
     def _format_sources_and_disclaimer(self, source_metadata: List[Dict]) -> str:
-        """Creates the final sources and disclaimer string with clickable links."""
-        if not source_metadata:
-            return ""
+        """Creates the final sources and disclaimer string."""
+        if not source_metadata: return ""
 
         unique_sources = {metadata.get('title', 'N/A').strip(): metadata.get('source_url', '#') for metadata in
                           source_metadata}
-
-        sources_list = []
-        for title, url in unique_sources.items():
-            if title != 'N/A':
-                # If a valid URL exists, format it as a clickable Markdown link.
-                if url and url != '#':
-                    sources_list.append(f"- [{title}]({url})")
-                # Otherwise, just list the title without a link.
-                else:
-                    sources_list.append(f"- {title}")
+        sources_list = [f"- {title}" for title, url in unique_sources.items() if title != 'N/A']
 
         disclaimer = "\n\n---\n_Disclaimer: This is not legal advice. For informational purposes only. Always consult a qualified advocate._"
-        if not sources_list:
-            return disclaimer
+        if not sources_list: return disclaimer
 
         return "\n\n" + "=" * 15 + "\n*Sources Used:*\n" + "\n".join(sources_list) + disclaimer
 
-    # --- END OF CORRECTION ---
-
     def get_response(self, question: str) -> str:
         """Main public method to get a response for a user question."""
-        if not self.pinecone_index:
-            return "My core systems are offline. Please try again later."
+        if not self.pinecone_index: return "My core systems are offline. Please try again later."
         try:
             logger.info(f"--- New Question Received: \"{question}\" ---")
             context, source_metadata = self._get_context(question)
