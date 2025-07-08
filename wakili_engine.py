@@ -8,6 +8,7 @@ import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from pinecone import Pinecone
 from typing import Dict, List, Tuple, Any
+import re
 
 
 # --- Enhanced Logging Setup ---
@@ -162,34 +163,45 @@ From the user question below, extract the following:
             logger.debug(f"Raw AI response length: {len(text)} characters")
             logger.info(f"Extracted Keywords Response:\n{text}")
 
-            # Parse the response
+            # --- FIX: Robust parsing for keyword extraction ---
             data = {'AREA': "", 'TERMS': [], 'ISSUES': [], 'ACTS': []}
-
-            logger.debug("Parsing keyword extraction response...")
+            key_map = {
+                "1. PRIMARY LEGAL AREA": "AREA",
+                "2. KEY LEGAL TERMS": "TERMS",
+                "3. SPECIFIC ACTIONS/ISSUES": "ISSUES",
+                "4. RELEVANT ACTS": "ACTS"
+            }
+            
+            current_key = None
             for line in text.split('\n'):
-                if ':' in line:
-                    key, value = line.split(':', 1)
-                    key = key.strip().upper().replace('*', '')
+                line = line.strip()
+                if not line:
+                    continue
 
-                    # Map verbose keys to short keys
-                    if key.startswith("1. PRIMARY LEGAL AREA"):
-                        key = "AREA"
-                    elif key.startswith("2. KEY LEGAL TERMS"):
-                        key = "TERMS"
-                    elif key.startswith("3. SPECIFIC ACTIONS/ISSUES"):
-                        key = "ISSUES"
-                    elif key.startswith("4. RELEVANT ACTS"):
-                        key = "ACTS"
+                # Check if the line is a heading
+                is_heading = False
+                for heading_text, key_name in key_map.items():
+                    if heading_text in line:
+                        current_key = key_name
+                        is_heading = True
+                        break
+                
+                if is_heading:
+                    continue
 
-                    if key in data:
-                        clean_value = value.replace('*', '').strip()
-                        if isinstance(data[key], list):
-                            items = [item.strip() for item in clean_value.split(',') if item.strip()]
-                            data[key].extend(items)
-                            logger.debug(f"Added {len(items)} items to {key}")
-                        else:
-                            data[key] = clean_value
-                            logger.debug(f"Set {key} to: {clean_value}")
+                # If it's not a heading, it's content for the current key
+                if current_key:
+                    clean_value = line.replace('*', '').strip()
+                    if clean_value:
+                        if isinstance(data[current_key], list):
+                            # Handle potential sub-bullets or numbered lists within a section
+                            sub_items = re.split(r'\s*-\s*|\s*\d+\.\s*', clean_value)
+                            for item in sub_items:
+                                if item:
+                                    data[current_key].append(item.strip())
+                        elif data[current_key] == "": # For 'AREA'
+                            data[current_key] = clean_value
+
 
             # Combine search terms
             search_terms = data['TERMS'] + data['ACTS']
@@ -409,17 +421,17 @@ From the user question below, extract the following:
         prompt = f"""You are Wakili Wangu, an expert legal AI assistant for Kenya. Your task is to provide a high-accuracy answer based ONLY on the provided legal context.
 
 **Thinking Process (Chain of Thought):**
-1.  **Analyze the User's Question:** Read the user's **Question** below to understand their specific problem. For example, are they asking for a specific fine, a legal process, or their general rights?
-2.  **Scan the Context for Key Laws:** Search the entire **Context** provided. Identify the primary Acts and case law that directly address the user's question. For example, if the user asks about a traffic fine, find the "Traffic Act" or "Traffic (Minor Offences) Rules" in the context.
-3.  **Extract Specific Details:** Pull out the exact legal rules, rights, and, most importantly, *specific penalties or fines* from the relevant documents. Look for numbers, currency symbols (Ksh), and keywords like 'fine,' 'penalty,' or 'imprisonment.'
-4.  **Synthesize the Final Answer:** Based *only* on the extracted details, construct the final answer using the structure below. Directly connect the legal penalty to the user's specific question.
+1.  **Analyze the User's Question:** Read the user's **Question** below to understand their specific problem.
+2.  **Scan the Context for Key Laws:** Search the entire **Context** provided. Identify the primary Acts and case law that directly address the user's question.
+3.  **Extract Specific Details:** Pull out the exact legal rules, rights, and penalties from the relevant documents.
+4.  **Synthesize the Final Answer:** Based *only* on the extracted details, construct the final answer using the structure below.
 
-**Response Structure (use WhatsApp markdown):**
-* *Empathetic Acknowledgment:* Start with a single sentence showing you understand the situation.
-* ✅ *Direct Answer:* A clear, one-sentence summary of the legal position, including the specific penalty if found (e.g., "The penalty for this offense is a fine of...").
-* ⚖️ *The Law Explained:* Explain the most relevant Act from the context (e.g., "The Traffic (Minor Offences) Rules states..."). Quote the specific section or rule that mentions the penalty.
-* 🏛️ *Relevant Case Law:* If there are cases, summarize one that applies. If not, state: "No specific case law was retrieved for this query."
-* 📝 *Recommended Steps:* A clear, numbered list of actions the user should take based on the law.
+**Response Structure (Use Telegram Markdown - *bold* and _italic_):**
+- Start with a single, empathetic sentence showing you understand the situation. Do *not* use a title like "Empathetic Acknowledgment:".
+- *✅ Direct Answer:* A clear, one-sentence summary of the legal position.
+- *⚖️ The Law Explained:* Explain the most relevant Act or constitutional article from the context.
+- *🏛️ Relevant Case Law:* If there are cases, summarize one that applies using a "•" bullet point. If not, state: "No specific case law was retrieved for this query."
+- *📝 Recommended Steps:* A clear, numbered list of actions the user should take.
 
 **Crucial Rule:** If the context does not contain the specific penalty or fine amount, you MUST state that clearly. Do not invent numbers.
 
@@ -481,14 +493,21 @@ From the user question below, extract the following:
 
         sources_list = []
         for title, url in unique_sources.items():
-            if url and url != '#':
+            # --- FIX: Check for valid URL vs. URN ---
+            if url and url.startswith('http'):
                 sources_list.append(f"- [{title}]({url})")
                 logger.debug(f"Added source with URL: {title}")
             else:
                 sources_list.append(f"- {title}")
-                logger.debug(f"Added source without URL: {title}")
+                logger.debug(f"Added source without URL (or with URN): {title}")
 
-        disclaimer = "\n\n---\n_Disclaimer: This is not legal advice..._"
+        disclaimer = (
+            "\n\n---\n"
+            "_*Disclaimer:* This information is for educational purposes only and does not constitute legal advice. "
+            "It is not a substitute for consultation with a qualified legal professional. "
+            "Always consult an advocate for advice on your specific situation._"
+        )
+
 
         if not sources_list:
             logger.debug("No valid sources found, returning disclaimer only")
