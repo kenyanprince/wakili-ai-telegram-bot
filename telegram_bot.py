@@ -65,7 +65,6 @@ I will provide a detailed, yet easy-to-understand explanation.
 NON_TEXT_MESSAGE = "I'm sorry, I can only understand legal questions written in text. Please type your question for me."
 
 
-# --- THIS IS THE FIX: A FUNCTION TO SANITIZE MARKDOWN V2 ---
 def sanitize_markdown_v2(text: str) -> str:
     """Escapes characters for Telegram's MarkdownV2 parser while preserving bold/italics."""
     logger.debug("Sanitizing markdown text")
@@ -75,8 +74,6 @@ def sanitize_markdown_v2(text: str) -> str:
     sanitized_text = re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
     # Now, handle asterisks and underscores carefully
-    # This is a simple approach: if a line has an odd number of them, escape them all.
-    # A more complex regex could handle nested cases, but this covers most LLM errors.
     final_lines = []
     for line in sanitized_text.split('\n'):
         if line.count('*') % 2 != 0:
@@ -127,11 +124,13 @@ async def feedback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         logger.debug(f"Callback query answered for {query.from_user.id}")
 
-        # When editing, we must also use a compatible format.
-        # We will simply edit the text and remove the buttons.
+        # --- FIX: Edit the message as plain text to avoid parsing errors ---
+        # The original message was sent with MarkdownV2, which uses escaping.
+        # Trying to re-parse it with a different mode causes conflicts.
+        # Sending plain text is the safest way to update the message.
         await query.edit_message_text(
-            text=f"{query.message.text}\n\n--- \n*🙏 Thank you for your feedback!*",
-            parse_mode=ParseMode.MARKDOWN
+            text=f"{query.message.text}\n\n--- \n🙏 Thank you for your feedback!",
+            # No parse_mode is specified, so it defaults to plain text.
         )
         logger.info(f"Feedback acknowledgment sent to {query.from_user.id}")
 
