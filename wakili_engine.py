@@ -439,10 +439,10 @@ From the user question below, extract the following:
 4.  **Synthesize the Final Answer:** Based *only* on the extracted details, construct the final answer using the structure below.
 
 **Response Structure (Use Telegram Markdown - *bold* and _italic_):**
-- Start with a time-appropriate greeting ({greeting}), then in the same paragraph, provide a single, empathetic sentence showing you understand the user's situation. Do *not* use a title for this part.
+- Start with a single paragraph containing a time-appropriate greeting ({greeting}) and an empathetic sentence showing you understand the user's situation. Do *not* use a title for this part.
 - *✅ Direct Answer:* A clear, one-sentence summary of the legal position.
 - *⚖️ The Law Explained:* Explain the most relevant Act or constitutional article from the context.
-- *🏛️ Relevant Case Law:* If there are cases, summarize one that applies using a "•" bullet point. If not, state: "No specific case law was retrieved for this query."
+- *🏛️ Relevant Case Law:* Briefly summarize the most relevant case from the context that illustrates the legal point. If the cases in the context are not directly relevant, you may state: "While some cases were reviewed, none directly address the specifics of your question." If no cases are in the context at all, state: "No specific case law was retrieved for this query."
 - *📝 Recommended Steps:* A clear, numbered list of actions the user should take.
 
 **Crucial Rule:** If the context does not contain the specific penalty or fine amount, you MUST state that clearly. Do not invent numbers.
