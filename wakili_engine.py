@@ -43,7 +43,7 @@ logger = setup_wakili_logging()
 class Config:
     google_api_key: str = field(default_factory=lambda: os.getenv('GOOGLE_API_KEY'))
     pinecone_api_key: str = field(default_factory=lambda: os.getenv('PINECONE_API_KEY'))
-    generative_model_name: str = 'gemini-1.5-flash'
+    generative_model_name: str = 'gemini-2.0-flash'
     embedding_model_name: str = 'models/text-embedding-004'
     pinecone_index_name: str = "wakili-ai"
     namespace_mapping: Dict[str, str] = field(default_factory=lambda: {'statutes': 'statute', 'caselaw': 'caselaw'})
