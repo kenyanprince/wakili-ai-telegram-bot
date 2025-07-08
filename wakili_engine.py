@@ -46,9 +46,15 @@ class Config:
     generative_model_name: str = 'gemini-2.0-flash'
     embedding_model_name: str = 'models/text-embedding-004'
     pinecone_index_name: str = "wakili-ai"
-    namespace_mapping: Dict[str, str] = field(default_factory=lambda: {'statutes': 'statute', 'caselaw': 'caselaw'})
+    namespace_mapping: Dict[str, str] = field(default_factory=lambda: {
+        'constitution': 'constitution',
+        'statutes': 'statute',
+        'caselaw': 'caselaw'
+    })
+    constitution_relevance_threshold: float = 0.50
     statute_relevance_threshold: float = 0.40
     caselaw_relevance_threshold: float = 0.50
+    max_constitution_in_context: int = 5
     max_statutes_in_context: int = 8
     max_caselaw_in_context: int = 6
 
@@ -60,8 +66,10 @@ class Config:
         logger.info(f"  - Generative Model: {self.generative_model_name}")
         logger.info(f"  - Embedding Model: {self.embedding_model_name}")
         logger.info(f"  - Pinecone Index: {self.pinecone_index_name}")
+        logger.info(f"  - Constitution Threshold: {self.constitution_relevance_threshold}")
         logger.info(f"  - Statute Threshold: {self.statute_relevance_threshold}")
         logger.info(f"  - Caselaw Threshold: {self.caselaw_relevance_threshold}")
+        logger.info(f"  - Max Constitution Docs: {self.max_constitution_in_context}")
         logger.info(f"  - Max Statutes: {self.max_statutes_in_context}")
         logger.info(f"  - Max Caselaw: {self.max_caselaw_in_context}")
 
@@ -227,12 +235,15 @@ From the user question below, extract the following:
             embedding_time = time.time() - start_time
             logger.info(f"Generated {len(embeddings)} embeddings in {embedding_time:.2f} seconds")
 
-            # Get relevance threshold
-            relevance_threshold = (
-                self.config.statute_relevance_threshold
-                if namespace_key == 'statutes'
-                else self.config.caselaw_relevance_threshold
-            )
+            # Get relevance threshold based on the namespace key
+            if namespace_key == 'statutes':
+                relevance_threshold = self.config.statute_relevance_threshold
+            elif namespace_key == 'caselaw':
+                relevance_threshold = self.config.caselaw_relevance_threshold
+            elif namespace_key == 'constitution':
+                relevance_threshold = self.config.constitution_relevance_threshold
+            else:
+                relevance_threshold = 0.4  # A sensible default
 
             logger.debug(f"Using relevance threshold: {relevance_threshold}")
 
@@ -361,9 +372,13 @@ From the user question below, extract the following:
             f"Context section formatted: {len(top_matches)} {doc_type} documents, {len(context_str)} characters")
         return context_str, metadata_list
 
-    def _build_context(self, statute_matches: Dict, caselaw_matches: Dict) -> Tuple[str, List[Dict]]:
-        """Build context from matches with detailed logging."""
-        logger.info("Building context from statute and caselaw matches...")
+    def _build_context(self, constitution_matches: Dict, statute_matches: Dict, caselaw_matches: Dict) -> Tuple[str, List[Dict]]:
+        """Build context from constitution, statute, and caselaw matches with detailed logging."""
+        logger.info("Building context from constitution, statute and caselaw matches...")
+
+        constitution_context, constitution_meta = self._format_context_section(
+            constitution_matches, "Constitution", self.config.max_constitution_in_context
+        )
 
         statute_context, statute_meta = self._format_context_section(
             statute_matches, "Statute", self.config.max_statutes_in_context
@@ -373,10 +388,11 @@ From the user question below, extract the following:
             caselaw_matches, "Case Law", self.config.max_caselaw_in_context
         )
 
-        context = statute_context + caselaw_context
-        source_metadata = statute_meta + caselaw_meta
+        context = constitution_context + statute_context + caselaw_context
+        source_metadata = constitution_meta + statute_meta + caselaw_meta
 
         logger.info(f"Context built successfully:")
+        logger.info(f"  - Constitution: {len(constitution_meta)} documents")
         logger.info(f"  - Statutes: {len(statute_meta)} documents")
         logger.info(f"  - Case Law: {len(caselaw_meta)} documents")
         logger.info(f"  - Total context length: {len(context)} characters")
@@ -399,11 +415,11 @@ From the user question below, extract the following:
 4.  **Synthesize the Final Answer:** Based *only* on the extracted details, construct the final answer using the structure below. Directly connect the legal penalty to the user's specific question.
 
 **Response Structure (use WhatsApp markdown):**
-*   *Empathetic Acknowledgment:* Start with a single sentence showing you understand the situation.
-*   ✅ *Direct Answer:* A clear, one-sentence summary of the legal position, including the specific penalty if found (e.g., "The penalty for this offense is a fine of...").
-*   ⚖️ *The Law Explained:* Explain the most relevant Act from the context (e.g., "The Traffic (Minor Offences) Rules states..."). Quote the specific section or rule that mentions the penalty.
-*   🏛️ *Relevant Case Law:* If there are cases, summarize one that applies. If not, state: "No specific case law was retrieved for this query."
-*   📝 *Recommended Steps:* A clear, numbered list of actions the user should take based on the law.
+* *Empathetic Acknowledgment:* Start with a single sentence showing you understand the situation.
+* ✅ *Direct Answer:* A clear, one-sentence summary of the legal position, including the specific penalty if found (e.g., "The penalty for this offense is a fine of...").
+* ⚖️ *The Law Explained:* Explain the most relevant Act from the context (e.g., "The Traffic (Minor Offences) Rules states..."). Quote the specific section or rule that mentions the penalty.
+* 🏛️ *Relevant Case Law:* If there are cases, summarize one that applies. If not, state: "No specific case law was retrieved for this query."
+* 📝 *Recommended Steps:* A clear, numbered list of actions the user should take based on the law.
 
 **Crucial Rule:** If the context does not contain the specific penalty or fine amount, you MUST state that clearly. Do not invent numbers.
 
@@ -502,33 +518,39 @@ From the user question below, extract the following:
             logger.info("📋 STEP 1: Extracting legal keywords...")
             legal_area, search_terms, legal_issues = self._extract_legal_keywords(question)
 
-            # Step 2: Search for statutes
-            logger.info("📚 STEP 2: Searching statute database...")
+            # Step 2: Search the Constitution
+            logger.info("📜 STEP 2: Searching the Constitution...")
+            constitution_matches = self._enhanced_search_strategy(
+                question, legal_area, search_terms, legal_issues, 'constitution'
+            )
+
+            # Step 3: Search for statutes
+            logger.info("📚 STEP 3: Searching statute database...")
             statute_matches = self._enhanced_search_strategy(
                 question, legal_area, search_terms, legal_issues, 'statutes'
             )
 
-            # Step 3: Search for case law
-            logger.info("⚖️ STEP 3: Searching case law database...")
+            # Step 4: Search for case law
+            logger.info("⚖️ STEP 4: Searching case law database...")
             caselaw_matches = self._enhanced_search_strategy(
                 question, legal_area, search_terms, legal_issues, 'caselaw'
             )
 
-            # Step 4: Build context
-            logger.info("🔨 STEP 4: Building legal context...")
-            context, source_metadata = self._build_context(statute_matches, caselaw_matches)
+            # Step 5: Build context
+            logger.info("🔨 STEP 5: Building legal context...")
+            context, source_metadata = self._build_context(constitution_matches, statute_matches, caselaw_matches)
 
             # Check if we have any context
             if not context.strip():
                 logger.warning("No relevant legal context found")
                 return "I'm sorry, I could not find relevant legal information to answer your question."
 
-            # Step 5: Generate AI response
-            logger.info("🤖 STEP 5: Generating AI response...")
+            # Step 6: Generate AI response
+            logger.info("🤖 STEP 6: Generating AI response...")
             answer = self._generate_response(question, context)
 
-            # Step 6: Format sources
-            logger.info("📄 STEP 6: Formatting sources and disclaimer...")
+            # Step 7: Format sources
+            logger.info("📄 STEP 7: Formatting sources and disclaimer...")
             sources_section = self._format_sources_and_disclaimer(source_metadata)
 
             # Combine final response
@@ -540,6 +562,7 @@ From the user question below, extract the following:
             logger.info("✅ QUESTION PROCESSING COMPLETED SUCCESSFULLY")
             logger.info(f"📊 Processing Statistics:")
             logger.info(f"  - Total processing time: {total_time:.2f} seconds")
+            logger.info(f"  - Constitution matches: {len(constitution_matches)}")
             logger.info(f"  - Statute matches: {len(statute_matches)}")
             logger.info(f"  - Case law matches: {len(caselaw_matches)}")
             logger.info(f"  - Context length: {len(context)} characters")
