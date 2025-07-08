@@ -9,6 +9,8 @@ from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from pinecone import Pinecone
 from typing import Dict, List, Tuple, Any
 import re
+import datetime
+import pytz
 
 
 # --- Enhanced Logging Setup ---
@@ -57,7 +59,7 @@ class Config:
     caselaw_relevance_threshold: float = 0.50
     max_constitution_in_context: int = 5
     max_statutes_in_context: int = 8
-    max_caselaw_in_context: int = 6
+    max_caselaw_in_context: int = 3 # Reduced from 6 to 3
 
     def __post_init__(self):
         """Log configuration after initialization."""
@@ -165,43 +167,33 @@ From the user question below, extract the following:
 
             # --- FIX: Robust parsing for keyword extraction ---
             data = {'AREA': "", 'TERMS': [], 'ISSUES': [], 'ACTS': []}
-            key_map = {
-                "1. PRIMARY LEGAL AREA": "AREA",
-                "2. KEY LEGAL TERMS": "TERMS",
-                "3. SPECIFIC ACTIONS/ISSUES": "ISSUES",
-                "4. RELEVANT ACTS": "ACTS"
-            }
             
-            current_key = None
-            for line in text.split('\n'):
-                line = line.strip()
-                if not line:
-                    continue
+            # Regex to find the content block for each section
+            area_match = re.search(r"1\.\s*\*\*PRIMARY LEGAL AREA:\*\*(.*?)(?=\n2\.|\Z)", text, re.DOTALL | re.IGNORECASE)
+            terms_match = re.search(r"2\.\s*\*\*KEY LEGAL TERMS:\*\*(.*?)(?=\n3\.|\Z)", text, re.DOTALL | re.IGNORECASE)
+            issues_match = re.search(r"3\.\s*\*\*SPECIFIC ACTIONS/ISSUES:\*\*(.*?)(?=\n4\.|\Z)", text, re.DOTALL | re.IGNORECASE)
+            acts_match = re.search(r"4\.\s*\*\*RELEVANT ACTS:\*\*(.*)", text, re.DOTALL | re.IGNORECASE)
 
-                # Check if the line is a heading
-                is_heading = False
-                for heading_text, key_name in key_map.items():
-                    if heading_text in line:
-                        current_key = key_name
-                        is_heading = True
-                        break
-                
-                if is_heading:
-                    continue
+            if area_match:
+                data['AREA'] = area_match.group(1).strip()
 
-                # If it's not a heading, it's content for the current key
-                if current_key:
-                    clean_value = line.replace('*', '').strip()
-                    if clean_value:
-                        if isinstance(data[current_key], list):
-                            # Handle potential sub-bullets or numbered lists within a section
-                            sub_items = re.split(r'\s*-\s*|\s*\d+\.\s*', clean_value)
-                            for item in sub_items:
-                                if item:
-                                    data[current_key].append(item.strip())
-                        elif data[current_key] == "": # For 'AREA'
-                            data[current_key] = clean_value
+            def extract_list_items(match_obj):
+                if not match_obj:
+                    return []
+                content_block = match_obj.group(1)
+                # Split by lines, strip whitespace and list markers (*, -, or numbers)
+                items = [re.sub(r'^\s*[\*\-]\s*|\s*\d+\.\s*', '', line).strip() for line in content_block.split('\n') if line.strip()]
+                # Further clean up by removing the bolded Act names if present
+                cleaned_items = []
+                for item in items:
+                    cleaned_item = re.sub(r'\*\*(.*?):\*\*\s*', '', item)
+                    if cleaned_item:
+                        cleaned_items.append(cleaned_item.strip())
+                return cleaned_items
 
+            data['TERMS'] = extract_list_items(terms_match)
+            data['ISSUES'] = extract_list_items(issues_match)
+            data['ACTS'] = extract_list_items(acts_match)
 
             # Combine search terms
             search_terms = data['TERMS'] + data['ACTS']
@@ -412,11 +404,29 @@ From the user question below, extract the following:
 
         return context, source_metadata
 
+    def _get_greeting(self):
+        """Returns a time-appropriate greeting."""
+        try:
+            nairobi_tz = pytz.timezone("Africa/Nairobi")
+            current_hour = datetime.datetime.now(nairobi_tz).hour
+            if 5 <= current_hour < 12:
+                return "Good morning!"
+            elif 12 <= current_hour < 18:
+                return "Good afternoon!"
+            else:
+                return "Good evening!"
+        except Exception as e:
+            logger.error(f"Could not determine time-based greeting: {e}")
+            return "Hello!"
+
+
     def _generate_response(self, question: str, context: str) -> str:
         """Generate AI response with comprehensive logging."""
         logger.info("Starting AI response generation...")
         logger.debug(f"Question length: {len(question)} characters")
         logger.debug(f"Context length: {len(context)} characters")
+
+        greeting = self._get_greeting()
 
         prompt = f"""You are Wakili Wangu, an expert legal AI assistant for Kenya. Your task is to provide a high-accuracy answer based ONLY on the provided legal context.
 
@@ -427,7 +437,7 @@ From the user question below, extract the following:
 4.  **Synthesize the Final Answer:** Based *only* on the extracted details, construct the final answer using the structure below.
 
 **Response Structure (Use Telegram Markdown - *bold* and _italic_):**
-- Start with a single, empathetic sentence showing you understand the situation. Do *not* use a title like "Empathetic Acknowledgment:".
+- Start with a time-appropriate greeting ({greeting}), then in the same paragraph, provide a single, empathetic sentence showing you understand the user's situation. Do *not* use a title for this part.
 - *✅ Direct Answer:* A clear, one-sentence summary of the legal position.
 - *⚖️ The Law Explained:* Explain the most relevant Act or constitutional article from the context.
 - *🏛️ Relevant Case Law:* If there are cases, summarize one that applies using a "•" bullet point. If not, state: "No specific case law was retrieved for this query."
@@ -501,11 +511,15 @@ From the user question below, extract the following:
                 sources_list.append(f"- {title}")
                 logger.debug(f"Added source without URL (or with URN): {title}")
 
+        # --- FIX: Add version and date from environment variable ---
+        data_last_updated = os.getenv('DATA_LAST_UPDATED', 'July 2025') # Default value for safety
+
         disclaimer = (
             "\n\n---\n"
             "_*Disclaimer:* This information is for educational purposes only and does not constitute legal advice. "
             "It is not a substitute for consultation with a qualified legal professional. "
             "Always consult an advocate for advice on your specific situation._"
+            f"\n\n_Wakili Wangu V2.5 (Updated: {data_last_updated})_"
         )
 
 
