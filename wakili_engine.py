@@ -363,6 +363,8 @@ From the user question below, extract the following:
 
         for i, match in enumerate(top_matches):
             metadata = match.get('metadata', {})
+            # --- FIX: Add doc_type to metadata for later categorization ---
+            metadata['doc_type'] = doc_type
             title = metadata.get('title', 'N/A')
             text_snippet = metadata.get('text_snippet', '')
             score = match.get('score', 0)
@@ -491,28 +493,50 @@ From the user question below, extract the following:
             logger.debug("No source metadata provided")
             return ""
 
-        # Extract unique sources
-        unique_sources = {}
+        # --- FIX: Categorize sources ---
+        constitution_sources = {}
+        statute_sources = {}
+        case_sources = {}
+
         for metadata in source_metadata:
+            doc_type = metadata.get('doc_type', 'Unknown')
             title = metadata.get('title', 'N/A').strip()
             url = metadata.get('source_url', '#')
-            if title != 'N/A':
-                unique_sources[title] = url
 
-        logger.debug(f"Found {len(unique_sources)} unique sources")
+            if title == 'N/A':
+                continue
 
-        sources_list = []
-        for title, url in unique_sources.items():
-            # --- FIX: Check for valid URL vs. URN ---
-            if url and url.startswith('http'):
-                sources_list.append(f"- [{title}]({url})")
-                logger.debug(f"Added source with URL: {title}")
-            else:
-                sources_list.append(f"- {title}")
-                logger.debug(f"Added source without URL (or with URN): {title}")
+            if doc_type == 'Constitution':
+                constitution_sources[title] = url
+            elif doc_type == 'Statute':
+                statute_sources[title] = url
+            elif doc_type == 'Case Law':
+                case_sources[title] = url
 
-        # --- FIX: Add version and date from environment variable ---
-        data_last_updated = os.getenv('DATA_LAST_UPDATED', 'July 2025') # Default value for safety
+        sources_list_str = ""
+        if constitution_sources:
+            sources_list_str += "\n*The Constitution of Kenya:*\n"
+            for title, url in constitution_sources.items():
+                sources_list_str += f"- {title}\n"
+
+        if statute_sources:
+            sources_list_str += "\n*Acts of Parliament:*\n"
+            for title, url in statute_sources.items():
+                if url and url.startswith('http'):
+                    sources_list_str += f"- [{title}]({url})\n"
+                else:
+                    sources_list_str += f"- {title}\n"
+        
+        if case_sources:
+            sources_list_str += "\n*Case Law:*\n"
+            for title, url in case_sources.items():
+                if url and url.startswith('http'):
+                    sources_list_str += f"- [{title}]({url})\n"
+                else:
+                    sources_list_str += f"- {title}\n"
+
+
+        data_last_updated = os.getenv('DATA_LAST_UPDATED', 'July 2025')
 
         disclaimer = (
             "\n\n---\n"
@@ -522,13 +546,12 @@ From the user question below, extract the following:
             f"\n\n_Wakili Wangu V2.5 (Updated: {data_last_updated})_"
         )
 
-
-        if not sources_list:
+        if not sources_list_str.strip():
             logger.debug("No valid sources found, returning disclaimer only")
             return disclaimer
 
-        formatted_sources = "\n\n" + "=" * 15 + "\n*Sources Used:*\n" + "\n".join(sources_list) + disclaimer
-        logger.info(f"Sources section formatted with {len(sources_list)} sources")
+        formatted_sources = "\n\n" + "=" * 15 + "\n*Sources Used:*" + sources_list_str + disclaimer
+        logger.info(f"Sources section formatted with categorized sources")
 
         return formatted_sources
 
