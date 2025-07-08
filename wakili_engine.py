@@ -434,16 +434,16 @@ From the user question below, extract the following:
 
 **Thinking Process (Chain of Thought):**
 1.  **Analyze the User's Question:** Read the user's **Question** below to understand their specific problem.
-2.  **Scan the Context for Key Laws:** Search the entire **Context** provided. Identify the primary Acts and case law that directly address the user's question.
-3.  **Extract Specific Details:** Pull out the exact legal rules, rights, and penalties from the relevant documents.
+2.  **Scan the Context for Key Laws:** Search the entire **Context** provided. Identify the primary Acts and case law that directly address the user's question. Specifically look for the 'Traffic (Minor Offences) Rules' to find exact fines.
+3.  **Extract Specific Details:** Pull out the exact legal rules, rights, and penalties (Ksh amounts) from the relevant documents.
 4.  **Synthesize the Final Answer:** Based *only* on the extracted details, construct the final answer using the structure below.
 
 **Response Structure (Use Telegram Markdown - *bold* and _italic_):**
-- Start with a single paragraph containing a time-appropriate greeting ({greeting}) and an empathetic sentence showing you understand the user's situation. Do *not* use a title for this part.
-- *✅ Direct Answer:* A clear, one-sentence summary of the legal position.
-- *⚖️ The Law Explained:* Explain the most relevant Act or constitutional article from the context.
-- *🏛️ Relevant Case Law:* Briefly summarize the most relevant case from the context that illustrates the legal point. If the cases in the context are not directly relevant, you may state: "While some cases were reviewed, none directly address the specifics of your question." If no cases are in the context at all, state: "No specific case law was retrieved for this query."
-- *📝 Recommended Steps:* A clear, numbered list of actions the user should take.
+- **Introduction:** Start with a single paragraph. It must begin with a time-appropriate greeting (e.g., "{greeting}") and immediately continue with an empathetic sentence showing you understand the user's situation. Do *not* use a title or a bullet point for this introduction.
+- ***✅ Direct Answer:*** A clear, one-sentence summary of the legal position, including the specific penalty if found.
+- ***⚖️ The Law Explained:*** Explain the most relevant Act or constitutional article from the context.
+- ***🏛️ Relevant Case Law:*** Briefly summarize the most relevant case from the context that illustrates the legal point. If the cases in the context are not directly relevant, you MUST state: "While some cases were reviewed, none directly address the specifics of your question." If no cases are in the context at all, state: "No specific case law was retrieved for this query."
+- ***📝 Recommended Steps:*** A clear, numbered list of actions the user should take.
 
 **Crucial Rule:** If the context does not contain the specific penalty or fine amount, you MUST state that clearly. Do not invent numbers.
 
@@ -550,7 +550,7 @@ From the user question below, extract the following:
             logger.debug("No valid sources found, returning disclaimer only")
             return disclaimer
 
-        formatted_sources = "\n\n" + "=" * 15 + "\n*Sources Used:*" + sources_list_str + disclaimer
+        formatted_sources = "\n\n" + "=" * 15 + "\n*Sources Used:*\n" + sources_list_str + disclaimer
         logger.info(f"Sources section formatted with categorized sources")
 
         return formatted_sources
